@@ -1,6 +1,7 @@
 
 
-import osproc, strutils, asyncdispatch, streams, npeg, tables, times, algorithm, deques, strformat
+import strutils, asyncdispatch, streams, npeg, tables, times, algorithm, deques, strformat
+import asynctools
 
 
 {.experimental: "codeReordering".}
@@ -67,15 +68,16 @@ var
   names = loadNames()
 
 
-proc initLowpass[T](len: int): Lowpass[T] =
+proc initLowpass[T](len: int, initval = 0.T): Lowpass[T] =
   result.len = len
-
+  for i in 0..<len:
+    result.put initVal
 
 proc put[T](a: var Lowpass[T], val: T) =
   while a.hist.len >= a.len:
     discard a.hist.popFirst
-  while a.hist.len < a.len:
-    a.hist.addLast val
+  a.hist.addLast val
+ 
   a.val = 0
   for v in a.hist:
     a.val += v
@@ -94,7 +96,7 @@ proc dumpRSSI(d: Device): string =
   const rssiMin = -100
   const rssiMax =  -40
   let r = d.rssi[0].get
-  let x = (w.float * (rssiMin - r) / (rssiMin - rssiMax)).int
+  let x = (w.float * (rssiMin - r) / (rssiMin - rssiMax)).int.clamp(0, w)
   var color: string
   if x > 5: color = "\e[32m"
   elif x > 2: color = "\e[33m"
@@ -212,37 +214,50 @@ proc scan() =
       options = { poUsePath, poStdErrToStdOut }
     )
 
-  let lescanStream = lescan.outputStream
-  let btmonStream = btmon.outputStream
+  let lescanStream = lescan.outputHandle
+  let btmonStream = btmon.outputHandle
   var sd: ScanData
   var devices: Devices
-  var tdump = now()
+  
+  proc readLescan() {.async.} =
+    var l = newString(128)
+    while true:
+      discard await btmonStream.readInto(l[0].addr, l.len)
 
-  while true:
+  proc readBtmon() {.async.} =
+    var l = newString(128)
+    while true:
+      let c = await btmonStream.readInto(l[0].addr, l.len)
+      l.setLen c
 
-    discard lescanStream.readAll()
-    let l = btmonStream.readLine()
+      discard btmonParser.match(l, sd)
+      if sd.complete:
+        let a = sd.address
+        if a notin devices:
+          devices[a] = Device(address: a, time: now(), rssi: [
+            initLowpass[float]( 20, -90),
+            initLowpass[float](100, -90),
+          ])
+        let dev = devices[a]
+        dev.rssiRaw = sd.rssi
+        dev.time = now()
+        if sd.name.len > 0 and dev.name.len == 0:
+          dev.name = sd.name
+        if sd.company.len > 0 and dev.company.len == 0:
+          dev.company = sd.company
+        sd.complete = false
 
-    discard btmonParser.match(l, sd)
-    if sd.complete:
-      let a = sd.address
-      if a notin devices:
-        devices[a] = Device(address: a, time: now(), rssi: [
-          initLowpass[float](20),
-          initLowpass[float](100),
-        ])
-      let dev = devices[a]
-      dev.rssiRaw = sd.rssi
-      dev.time = now()
-      if sd.name.len > 0 and dev.name.len == 0:
-        dev.name = sd.name
-      if sd.company.len > 0 and dev.company.len == 0:
-        dev.company = sd.company
-      sd.complete = false
-
-    if now() > tdump:
+  proc dumpLoop() {.async.} =
+    while true:
       dump(devices)
-      tdump = now() + 250.milliSeconds
+      await sleepAsync 250
+
+  asyncCheck readBtmon()
+  asyncCheck readLescan()
+  asyncCheck dumpLoop()
+
 
 echo "\e[2J"
 scan()
+runForever()
+
