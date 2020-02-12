@@ -19,15 +19,20 @@ type
 
   Scandata = object
     address: string
+    company: string
     rssi: int
     name: string
     complete: bool
-    time: DateTime
 
   Device = ref object
-    sd: Scandata
+    #sd: Scandata
+    address: string
+    name: string
+    company: string
+    rssiRaw: int
     rssi: array[2, Lowpass[float]]
     age: int
+    time: DateTime
 
   Devices = OrderedTable[string, Device]
 
@@ -81,7 +86,7 @@ proc get[T](a: Lowpass[T]): T = a.val
 
 
 proc dumpAddress(d: Device): string =
-  result = "[\e[37m" & d.sd.address & "\e[0m]"
+  result = "[\e[37m" & d.address & "\e[0m]"
 
 
 proc dumpRSSI(d: Device): string =
@@ -122,17 +127,20 @@ proc dumpAge(d: Device): string =
 
 
 proc dumpName(d: Device): string =
-  let a = d.sd.address
+  let a = d.address
 
   if a in names:
     return "\e[37;1m" & names[a] & "\e[0m"
-
-  if d.sd.name.len > 0:
-    return "\e[37;1m" & d.sd.name & "\e[0m"
+  
+  if d.name.len > 0:
+    return "\e[1;30m" & d.name & "\e[0m"
+  
+  if d.company.len > 0:
+    return "\e[1;30m" & d.company & "\e[0m"
 
   let oui = a[0..7]
   if oui in ouis:
-    return "\e[37m" & ouis[oui] & "\e[0m"
+    return "\e[1;30m" & ouis[oui] & "\e[0m"
  
   return "\e[1;30m-\e[0m"
   
@@ -154,16 +162,16 @@ proc dump(d: Device, names: Table[string, string]): string =
 
 proc dump(devices: var Devices) =
 
-  let names = loadNames()
+  names = loadNames()
   var drops: seq[string]
 
   echo "\e[H"
 
   for a, d in devices:
 
-    d.rssi[0].put d.sd.rssi.float
-    d.rssi[1].put d.sd.rssi.float
-    d.age = (now() - d.sd.time).inSeconds.int
+    d.rssi[0].put d.rssiRaw.float
+    d.rssi[1].put d.rssiRaw.float
+    d.age = (now() - d.time).inSeconds.int
 
     if d.age < 5 * 60:
       echo d.dump(names) & "\e[K"
@@ -179,16 +187,18 @@ proc dump(devices: var Devices) =
 proc scan() =
 
   let p = peg("btmon", sd: Scandata):
-    btmon <- next | @(address | rssi | name)
+    btmon <- next | @(address | rssi | name | company)
     next <- ">":
       sd.name = ""
     address <- "Address: " * >17:
       sd.address = $1
     name <- "Name (complete): " * >+1:
       sd.name = $1
+    company <- "Company: " * >+(1-" ("):
+      if $1 != "not assigned":
+        sd.company = $1
     rssi <- "RSSI: " * >("-" * +Digit):
       sd.rssi = parseInt($1)
-      sd.time = now()
       sd.complete = true
 
   let lescan = startProcess(
@@ -208,13 +218,18 @@ proc scan() =
     discard p.match(l, sd)
     if sd.complete:
       let a = sd.address
-      if a in devices:
-        devices[a].sd = sd
-      else:
-        devices[a] = Device(sd: sd, rssi: [
+      if a notin devices:
+        devices[a] = Device(address: a, time: now(), rssi: [
           initLowpass[float](20),
           initLowpass[float](100),
         ])
+      let dev = devices[a]
+      dev.rssiRaw = sd.rssi
+      dev.time = now()
+      if sd.name.len > 0 and dev.name.len == 0:
+        dev.name = sd.name
+      if sd.company.len > 0 and dev.company.len == 0:
+        dev.company = sd.company
       sd.complete = false
 
     if now() > tdump:
