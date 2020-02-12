@@ -49,9 +49,9 @@ proc newLineSplitter(fn: proc(s: string)): LineSplitter =
 proc put(ls: LineSplitter, data: string) =
   
   let p = peg lines:
-    lines <- line * *('\n' * line)
-    line <- >+(1-'\n'):
-      ls.fn($0)
+    lines <- *line
+    line <- >+(1-'\n') * '\n':
+      ls.fn($1)
 
   ls.buf.add data
   let r = p.match(ls.buf)
@@ -242,7 +242,6 @@ proc scan() =
     var l = newString(128)
     while true:
       discard await btmonStream.readInto(l[0].addr, l.len)
-
 
   proc readBtmon() {.async.} =
 
