@@ -37,6 +37,25 @@ type
 
   Devices = OrderedTable[string, Device]
 
+  Linesplitter = ref object
+    buf: string
+    fn: proc(s: string)
+
+
+proc newLineSplitter(fn: proc(s: string)): LineSplitter =
+  new result
+  result.fn = fn
+
+proc put(ls: LineSplitter, data: string) =
+  
+  let p = peg lines:
+    lines <- line * *('\n' * line)
+    line <- >+(1-'\n'):
+      ls.fn($0)
+
+  ls.buf.add data
+  let r = p.match(ls.buf)
+  ls.buf = ls.buf[r.matchLen..^1]
 
 
 proc loadOuis(): Table[string, string] =
@@ -193,9 +212,9 @@ proc scan() =
       sd.name = ""
     address <- "Address: " * >17:
       sd.address = $1
-    name <- "Name (complete): " * >+1:
+    name <- "Name (complete): " * >+(Alnum | ' '):
       sd.name = $1
-    company <- "Company: " * >+(1-" ("):
+    company <- "Company: " * >+(Alnum | ' '):
       if $1 != "not assigned":
         sd.company = $1
     rssi <- "RSSI: " * >("-" * +Digit):
@@ -224,12 +243,10 @@ proc scan() =
     while true:
       discard await btmonStream.readInto(l[0].addr, l.len)
 
-  proc readBtmon() {.async.} =
-    var l = newString(128)
-    while true:
-      let c = await btmonStream.readInto(l[0].addr, l.len)
-      l.setLen c
 
+  proc readBtmon() {.async.} =
+
+    proc doLine(l: string) =
       discard btmonParser.match(l, sd)
       if sd.complete:
         let a = sd.address
@@ -246,6 +263,14 @@ proc scan() =
         if sd.company.len > 0 and dev.company.len == 0:
           dev.company = sd.company
         sd.complete = false
+
+    while true:
+      var splitter = newLineSplitter(doLine)
+      var buf = newString(8192)
+      let c = await btmonStream.readInto(buf[0].addr, buf.len)
+      buf.setLen c
+      splitter.put buf
+
 
   proc dumpLoop() {.async.} =
     while true:
