@@ -148,7 +148,6 @@ proc dumpName(d: Device): string =
 
 proc dump(d: Device, names: Table[string, string]): string =
 
-
   var fields: seq[string]
 
   fields.add d.dumpAddress
@@ -186,7 +185,7 @@ proc dump(devices: var Devices) =
 
 proc scan() =
 
-  let p = peg("btmon", sd: Scandata):
+  let btmonParser = peg("btmon", sd: Scandata):
     btmon <- next | @(address | rssi | name | company)
     next <- ">":
       sd.name = ""
@@ -200,22 +199,31 @@ proc scan() =
     rssi <- "RSSI: " * >("-" * +Digit):
       sd.rssi = parseInt($1)
       sd.complete = true
-
+  
   let lescan = startProcess(
+      command = "sudo", 
+      args = [ "hcitool", "lescan", "--duplicates" ],
+      options = { poUsePath, poStdErrToStdOut }
+    )
+
+  let btmon = startProcess(
       command = "sudo", 
       args = [ "btmon" ],
       options = { poUsePath, poStdErrToStdOut }
     )
 
-  let s = lescan.outputStream
-    
+  let lescanStream = lescan.outputStream
+  let btmonStream = btmon.outputStream
   var sd: ScanData
   var devices: Devices
   var tdump = now()
 
   while true:
-    let l = s.readLine()
-    discard p.match(l, sd)
+
+    discard lescanStream.readAll()
+    let l = btmonStream.readLine()
+
+    discard btmonParser.match(l, sd)
     if sd.complete:
       let a = sd.address
       if a notin devices:
